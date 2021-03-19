@@ -1,0 +1,180 @@
+---
+title: "P4 GroupPi"
+geometry: margin=0.9in
+output:
+  pdf_document:
+    highlight: tango
+    toc_depth: 2
+  word_document:
+    toc_depth: '2'
+subtitle: CS4831
+fontsize: 11pt
+---
+Packages used in this assignment:
+```{r packages, message = FALSE, warning = FALSE, attr.source='.numberLines'}
+library(caret)
+library(tidyverse)
+library(MASS)
+library(scales)
+library(rpart)
+library(klaR)
+library(cvTools)
+library(e1071)
+library(class)
+library(ROCR)
+library(pROC)
+library(rpart.plot)
+```
+
+# Q1
+Group Pi  
+Members: Jordan DeYonker, Lydia Savatsky, and Alan Bouwman
+
+# Q2  
+
+## Q2 (a)
+Loading in the data and excluding variables `original_title` and `imdb.id`.
+
+```{r, eval = TRUE}
+movie <- read.csv("hit-movies.csv")
+View(movie)
+movie_pred <- movie[,3:88]
+View(movie_pred)
+```
+
+## Q2 (b-f)
+
+```{r, eval = TRUE}
+#Min-max scaling
+hit.scale <- (movie_pred - min(movie_pred)) / (max(movie_pred) - min(movie_pred))
+#10-fold cross-validation
+set.seed(22)
+folds <- cvFolds(nrow(hit.scale), K = 10, R = 1, type = "random")
+for (i in 1:10) {
+  trainCV.movie <- hit.scale[folds$subsets[folds$which != i], ]
+  testCV.movie <- hit.scale[folds$subsets[folds$which == i], ]
+  #print(length(trainCV.movie$Hit ==	0.00606060606060606))
+  #print(length(trainCV.movie$Hit == 0))
+  #Q2 (c) KNN
+  knn.fit1 <- knn(trainCV.movie[,-86], testCV.movie[,-86], trainCV.movie[,86], k = 3)
+  knn1.conf <- confusionMatrix(knn.fit1, as.factor(testCV.movie[,86]))
+  knn1.auc <- auc(testCV.movie[,86], as.numeric(knn.fit1))
+  print(sprintf("KNN (k=3): split = %d, acc = %.4f, f1 = %.4f, auc = %.4f",i, 
+                knn1.conf$overall[1], 
+                knn1.conf$byClass[7], 
+                knn1.auc))
+  
+  knn.fit2 <- knn(trainCV.movie[,-86], testCV.movie[,-86], trainCV.movie[,86], k = 9)
+  knn2.conf <- confusionMatrix(knn.fit2, as.factor(testCV.movie[,86]))
+  knn2.auc <- auc(testCV.movie[,86], as.numeric(knn.fit2))
+  print(sprintf("KNN (k=9): split=%d, acc=%.4f, f1=%.4f, auc=%.4f",i, 
+                knn2.conf$overall[1], 
+                knn2.conf$byClass[7], 
+                knn2.auc))
+  knn.fit3 <- knn(trainCV.movie[,-86], testCV.movie[,-86], trainCV.movie[,86], k = 15)
+  knn3.conf <- confusionMatrix(knn.fit3, as.factor(testCV.movie[,86]))
+  knn3.auc <- auc(testCV.movie[,86], as.numeric(knn.fit3))
+  print(sprintf("KNN (k=15):  split=%d, acc=%.3f, f1=%.3f, auc=%.4f",i, 
+                knn3.conf$overall[1], 
+                knn3.conf$byClass[7], 
+                knn3.auc))
+         
+  ###Q2 (d) Decision Trees
+  
+  #positiveWeight = 1.0 / (nrow(subset(trainCV.movie, Hit == 0.00606060606060606)) / nrow(trainCV.movie))
+  #negativeWeight = 1.0 / (nrow(subset(trainCV.movie, Y == 0)) / nrow(trainCV.movie))
+  
+  #need to fix this ifelse statement - needs to be a value of 6 if positive hit
+  modelWeights <- ifelse(trainCV.movie$Hit == 0.00606060606060606, 6, 1)
+  
+  #View(modelWeights)
+  #View(trainCV.movie$Hit)
+  
+  dt.movie <- rpart(as.factor(trainCV.movie$Hit)~., data = trainCV.movie, weights = modelWeights)
+  dt.pred.movie <- predict(dt.movie, testCV.movie[,-86], type = "class")
+  dt.conf <- confusionMatrix(dt.pred.movie, as.factor(testCV.movie$Hit))
+  dt.auc <- auc(testCV.movie$Hit, as.numeric(dt.pred.movie))
+  print(sprintf("DT:  split=%d, acc=%.3f, f1=%.3f, auc=%.3f", i, 
+                dt.conf$overall[1], 
+                dt.conf$byClass[7], 
+                dt.auc))
+  
+  #pruning
+  dt.prune.movie <- prune(dt.movie,cp = dt.movie$cptable[which.min(dt.movie$cptable[,"xerror"]),"CP"])
+  dt.prune.pred.movie <- predict(dt.prune.movie, testCV.movie[,-86], type = "class")
+  dt.prune.conf <- confusionMatrix(dt.prune.pred.movie, as.factor(testCV.movie$Hit))
+  dt.prune.auc <- auc(testCV.movie$Hit, as.numeric(dt.prune.pred.movie))
+  print(sprintf("DT Prune:  split = %d, acc=%.3f, f1=%.3f, auc=%.3f", i, 
+                dt.prune.conf$overall[1], 
+                dt.prune.conf$byClass[7], 
+                dt.prune.auc))
+  
+  #Q2 (e) Naive Bayes
+ 
+  nb.movie <- naiveBayes(trainCV.movie[,-86], as.factor(trainCV.movie[,86]))
+  nb.pred.movie <- predict(nb.movie, testCV.movie[,-86], type = "class")
+  nb.conf <- confusionMatrix(nb.pred.movie, as.factor(testCV.movie$Hit))
+  nb.auc <- auc(testCV.movie$Hit, as.numeric(nb.pred.movie))
+  print(sprintf("NB:  split=%d, acc=%.3f, f1=%.3f, auc=%.3f", i, 
+                nb.conf$overall[1], 
+                nb.conf$byClass[7], 
+                nb.auc))
+  
+  #Q2 (f) (i) SVM Models
+  
+  svmgrid <- expand.grid(degree = c(2, 3, 4), scale = 2, C = c(0.01, 0.1, 1))
+  control <- trainControl(method = "cv", number = 5)
+  
+  #poly svm model
+  trainCV.movie$Hit <- factor(trainCV.movie$Hit)
+  svm.model.poly <- train(Hit~., data = trainCV.movie, method = "svmPoly", 
+                          tuneGrid = svmgrid,trControl = control)
+  svm.pred.poly <- predict(svm.model.poly, testCV.movie[,-86])
+  svm.poly.conf <-   confusionMatrix(svm.pred.poly, as.factor(testCV.movie$Hit))
+  results[i] <- svm.poly.conf$overall[1]
+  print(sprintf("SVM Poly:  split=%d, acc=%.3f, f1=%.3f, best-model: degree=%d, C=%.2f", i, 
+                svm.poly.conf$overall[1], 
+                svm.poly.conf$byClass[7], 
+                svm.model.poly$bestTune[[1]],
+                svm.model.poly$bestTune[[3]]))
+ 
+  #rb svm model
+  svmgrid.rb <- expand.grid(C = c(0.01, 0.1, 1))
+  svm.model.rb <- train(Hit~., data = trainCV.movie, method = "svmRadialCost", 
+                          tuneGrid = svmgrid.rb,
+                          trControl = control)
+  svm.pred.rb <- predict(svm.model.rb, testCV.movie[,-86])
+  svm.rb.conf <-   confusionMatrix(svm.pred.rb, as.factor(testCV.movie$Hit))
+  results.rb[i] <- svm.rb.conf$overall[1]
+  print(sprintf("SVM RB:  split=%d, acc=%.3f, f1=%.3f, best-model: C=%.2f", i, 
+                svm.rb.conf$overall[1], 
+                svm.rb.conf$byClass[7], 
+                svm.model.rb$bestTune[[1]]))
+ 
+   
+  }
+  
+  #Q2 (f) (ii) Random Forests
+  control <- trainControl(method = "cv", number = 5)
+  
+  rfgrid <- expand.grid(mtry = c(6, 10, 14))
+  
+  rfModel1 <- train(as.factor(trainCV.movie$Hit)~., data = trainCV.movie, method = "rf", tuneGrid = rfgrid, trControl = control, ntree = 25)
+  rf.pred1 <- predict(rfModel1, testCV.movie[,-86], type = "class")
+  confusionMatrix(rf.pred1, as.factor(testCV.movie$Hit))
+  auc(testCV.movie$Hit, as.numeric(rf.pred1))
+  
+  rfModel2 <- train(as.factor(trainCV.movie$Hit)~., data = trainCV.movie, method = "rf", tuneGrid = rfgrid, trControl = control, ntree = 50)
+  rf.pred2 <- predict(rfModel2, testCV.movie[,-86], type = "class")
+  confusionMatrix(rf.pred2, as.factor(testCV.movie$Hit))
+  auc(testCV.movie$Hit, as.numeric(rf.pred2))
+  
+  rfModel3 <- train(as.factor(trainCV.movie$Hit)~., data = trainCV.movie, method = "rf", tuneGrid = rfgrid, trControl = control, ntree = 100)
+  rf.pred3 <- predict(rfModel3, testCV.movie[,-86], type = "class")
+  confusionMatrix(rf.pred3, as.factor(testCV.movie$Hit))
+  auc(testCV.movie$Hit, as.numeric(rf.pred3))
+  
+  
+  #Q4 (f) (iii) Ada Boost
+}
+```
